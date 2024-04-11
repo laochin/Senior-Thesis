@@ -1,0 +1,24 @@
+---
+title: "Load PBP"
+output: pdf_document
+date: "2024-04-11"
+---
+
+Run this code before first 
+```{r}
+
+# get all 4th down play-by-play
+pbp_4th <- nfl4th::load_4th_pbp(2014:2023, fast = TRUE) %>%
+  filter(down == 4)
+
+
+```
+
+
+
+```{r}
+# get all 2-point conversion or extra point attempts 
+pbp_pat1 <- nfl4th::load_4th_pbp(2014:2023, fast = TRUE) %>%
+  filter(two_point_attempt == 1 | extra_point_attempt == 1)
+
+```
