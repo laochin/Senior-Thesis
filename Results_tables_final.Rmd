@@ -1,0 +1,178 @@
+---
+title: "results outputs"
+output: pdf_document
+date: "2024-04-04"
+---
+
+```{r setup, include=FALSE}
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+merged_data <- merge(RDOE_board, wpaoe_board, by = c("offensive_coach", "season", "posteam"))
+merged_data <- merge(merged_data, PATrdoe_board, by = c("offensive_coach", "season", "posteam"))
+final_data <- merge(merged_data, PATwpaoe_board, by = c("offensive_coach", "season", "posteam"))
+
+# Assuming final_data is your merged dataset
+# Remove columns ending with .y
+final_data <- final_data[, !grepl("\\.y$", names(final_data))]
+# Assuming final_data is your merged and cleaned dataset
+final_data$WPAOE_all <- final_data$total_wpaoe + final_data$total_PATwpaoe
+
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r}
+str(final_data)
+```
+
+
+
+
+```{r}
+# Assuming final_data is your complete merged and cleaned dataset
+
+# Loop through each season from 2014 to 2023 and create a separate dataset
+for (year in 2014:2023) {
+  assign(paste(year, "final_data", sep = "_"), final_data[final_data$season == year, ])
+}
+
+```
+
+
+```{r}
+
+# Assuming final_data is your data and teams_colors_logos is your logos dataframe
+# Let's do it for the 2014 season as an example
+
+# Merge with teams_colors_logos to get the team wordmarks/nicknames
+
+
+
+library(dplyr)
+library(gt)
+
+for (year in 2014:2023) {
+    season_data <- get(paste(year, "final_data", sep = "_")) %>%
+        left_join(teams_colors_logos, by = c("posteam" = "team_abbr")) %>%
+        arrange(desc(WPAOE_all)) %>%
+        mutate(Rank = row_number())
+
+    season_table <- season_data %>%
+        select(Rank,
+               Coach = offensive_coach,
+               `Team abbr.` = posteam,
+               `Team name` = team_nick,
+               `4th decisions` = decisions_4th.x,
+               `PAT decisions` = decisions_PAT.x,
+               `4th RDOE` = total_RDOE_4th,
+               `PAT RDOE` = total_PATrdoe,
+               `4th WPAOE (%)` = total_wpaoe_4th,
+               `PAT WPAOE (%)` = total_PATwpaoe,
+               `Total WPAOE (%)` = WPAOE_all)
+
+    # Calculate the number of coaches with positive metrics
+    positive_counts <- season_table %>%
+        summarize(
+            positive_4th_RDOE = sum(`4th RDOE` > 0, na.rm = TRUE),
+            positive_PAT_RDOE = sum(`PAT RDOE` > 0, na.rm = TRUE),
+            positive_4th_WPAOE = sum(`4th WPAOE (%)` > 0, na.rm = TRUE),
+            positive_PAT_WPAOE = sum(`PAT WPAOE (%)` > 0, na.rm = TRUE),
+            positive_Total_WPAOE = sum(`Total WPAOE (%)` > 0, na.rm = TRUE)
+        )
+
+    print(paste(year, "Season Positive Metrics:"))
+    print(positive_counts)
+
+    max_abs_value <- max(abs(season_table$`Total WPAOE (%)`), na.rm = TRUE)
+
+    gt_table <- gt(season_table) %>%
+        tab_header(
+            title = paste("Head Coach 4th Down and PAT Decision Performance,", year, "Season")
+        ) %>%
+        fmt_number(
+            columns = c(`4th RDOE`, `PAT RDOE`, `4th WPAOE (%)`, `PAT WPAOE (%)`, `Total WPAOE (%)`),
+            decimals = 2
+        ) %>%
+        data_color(
+            columns = c(`Total WPAOE (%)`),
+            colors = scales::col_numeric(
+                palette = c("red", "white", "green"),
+                domain = c(-max_abs_value, max_abs_value)
+            )
+        ) %>%
+        tab_style(
+            style = cell_text(weight = "bold", color = "black", align = "center"),
+            locations = cells_title(groups = c("title", "subtitle"))
+        ) %>%
+        tab_style(
+            style = cell_text(weight = "bold", color = "black", align = "center"),
+            locations = cells_column_labels()
+        ) %>%
+        tab_style(
+            style = cell_text(color = "black", align = "center"),
+            locations = cells_body()
+        ) %>%
+        cols_width(Coach ~ px(400), `Team name` ~ px(110))
+    
+    # Assign the gt table to a dynamically named variable
+    assign(paste0("gt_table_", year), gt_table)
+}
+
+
+
+
+
+
+```
+
+
+
+
+
+
+```{r}
+
+# and you can print them as you have done in your code
+
+
+output_2014 <- print(gt_table_2014)
+output_2015 <- print(gt_table_2015)
+output_2016 <- print(gt_table_2016)
+output_2017 <- print(gt_table_2017)
+output_2018 <- print(gt_table_2018)
+output_2019 <- print(gt_table_2019)
+output_2020 <- print(gt_table_2020)
+output_2021 <- print(gt_table_2021)
+output_2022 <- print(gt_table_2022)
+output_2023 <- print(gt_table_2023)
+
+```
+
+
+```{r}
+
+#v1
+for (year in 2014:2023) {
+    table_name <- paste0("gt_table_", year)
+    file_name <- paste0("gt_table_", year, "_v0.png")
+    
+    # Get the table from the variable name
+    gt_table <- get(table_name)
+    
+    # Save the table as a PNG file
+    gtsave(gt_table, file_name)
+}
+
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

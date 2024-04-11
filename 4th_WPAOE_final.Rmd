@@ -1,0 +1,197 @@
+---
+title: "4th WPAOE"
+output: pdf_document
+date: "2024-03-26"
+---
+
+Load libraries
+```{r}
+library(nfl4th)
+library(tidyverse)
+library(gt)
+library(ggrepel)
+library(nflreadr)
+library(nflplotR)
+library(xgboost)
+library(dplyr)
+library(randomForest)
+library(caret)
+options(scipen = 9999)
+library(nflfastR)
+library(ggthemes)
+library(ranger)
+library(vip)
+library(ggimage)
+library(DiagrammeR)
+```
+
+
+get appropriate play-by-play data
+```{r}
+pbp_4th_wp <- pbp_4th
+# filter out plays where go_boost is NA
+pbp_4th_wp <- pbp_4th_wp %>%
+  filter(!is.na(go_boost))
+
+# filter out plays where go is NA
+pbp_4th_wp <- pbp_4th_wp %>%
+  filter(!is.na(go))
+
+# add label for  decision wp gain/loss
+pbp_4th_wp <- pbp_4th_wp %>%
+  mutate(label = case_when(
+    go == 100 ~ go_boost,   # if you go for it
+    go == 0 ~ -go_boost    # if you don't go for it
+  ))
+
+# Columns before go_boost
+cols_before_wp <- names(pbp_4th_wp)[1:(ncol(pbp_4th_wp) - 12)]
+
+# Columns after go_boost and before 'go' and 'label'
+cols_after_wp <- names(pbp_4th_wp)[(ncol(pbp_4th_wp) - 10):(ncol(pbp_4th_wp) - 2)]
+
+# Reorder columns so go_boost is third-to-last
+pbp_4th_wp_check <- pbp_4th_wp %>%
+  select(
+    all_of(cols_before_wp),
+    all_of(cols_after_wp),
+    go_boost,
+    go,
+    label
+  )
+```
+
+Get features of importance
+
+```{r }
+# add coach making decision
+pbp_4th_wp_check <- pbp_4th_wp_check %>%
+  mutate(offensive_coach = if_else(posteam_type == "home", home_coach, away_coach))
+
+
+pbp_4th_wp_check <- pbp_4th_wp_check %>%
+  mutate(posteam_spread = if_else(posteam_type == "home", spread_line, spread_line * -1))
+
+
+# features of interest
+pbp_wp_data_join <- pbp_4th_wp_check |>
+   select(label, season, play_id, game_id, 
+         drive, home_team, away_team, posteam, 
+         offensive_coach, vegas_wp, wp, down, 
+         ydstogo, yardline_100, score_differential, 
+         game_seconds_remaining, posteam_timeouts_remaining, 
+         defteam_timeouts_remaining, first_down_prob,
+         go_wp, fg_wp, punt_wp, no_score_prob,
+         opp_fg_prob, opp_td_prob, fg_prob,
+          td_prob, qtr)
+
+#deselect features that are not for training
+decisions_wp <- pbp_wp_data_join |>
+  select(-offensive_coach, -play_id, -game_id, -drive, -home_team, -away_team, -posteam)
+
+
+```
+
+Xgboost model 
+
+```{r}
+decisions_wp$season <- as.factor(decisions_wp$season)
+decisions_wp$qtr <- as.factor(decisions_wp$qtr)
+
+dmy_wp <- dummyVars(" ~ .", data = decisions_wp)
+decisions_wp_model_data <- data.frame(predict(dmy_wp, newdata = decisions_wp))
+
+smp_size_wp <- floor(0.80 * nrow(decisions_wp_model_data))
+set.seed(2024)
+ind_wp <- sample(seq_len(nrow(decisions_wp_model_data)), size = smp_size_wp)
+train_wp <- as.matrix(decisions_wp_model_data[ind_wp, ])
+test_wp <- as.matrix(decisions_wp_model_data[-ind_wp, ])
+
+dim(train_wp)
+colnames(train_wp)
+```
+
+
+```{r}
+wpaoe_model <- xgboost(
+  data = train_wp[ , 2:dim(train_wp)[2]],
+  label = train_wp[, 1],
+  nrounds = 1200,
+  objective = "reg:squarederror",
+  early_stopping_rounds = 3,
+  max_depth = 10,
+  eta = 0.05,
+  subsample = 0.75,
+  lambda = 1,
+  alpha = 0,
+  gamma = 0, 
+  verbose = 0
+)
+
+
+vip(wpaoe_model)
+
+#xgb.plot.tree(model = wpaoe_model, trees = 1)
+
+pred_xgb_wp <- predict(wpaoe_model, test_wp[, 2:dim(train_wp)[2]])
+yhat_wp <- pred_xgb_wp
+y_wp <- test_wp[, 1]
+WPAOE_accuracy <- postResample(yhat_wp, y_wp)
+
+WPAOE_accuracy
+```
+Predictions and leaderboard table
+
+```{r}
+# Assuming your dependent variable is the first column in your dataset
+dependent_variable <- train_wp[, 1]  # Adjust the index according to your data
+
+# Calculate and display the statistics
+min_value <- min(dependent_variable)
+max_value <- max(dependent_variable)
+mean_value <- mean(dependent_variable)
+median_value <- median(dependent_variable)
+std_deviation <- sd(dependent_variable)
+
+# Print the statistics
+print(paste("Min:", min_value))
+print(paste("Max:", max_value))
+print(paste("Mean:", mean_value))
+print(paste("Median:", median_value))
+print(paste("Standard Deviation:", std_deviation))
+
+```
+
+
+```{r}
+decisions_wp_preds <- as.data.frame(
+  matrix(predict(wpaoe_model, as.matrix(decisions_wp_model_data %>% select(-label))))
+) |>
+  dplyr::rename(exp_decision_wp = V1)
+
+wpaoe_projs <- cbind(pbp_wp_data_join, decisions_wp_preds)
+
+wpaoe_projs_pre <- wpaoe_projs 
+
+wpaoe_projs_pre <- wpaoe_projs_pre %>%
+  mutate(wpaoe = label - exp_decision_wp)
+
+
+wpaoe_projs |>
+  mutate(wpaoe = label - exp_decision_wp) |>
+  group_by(offensive_coach, season, posteam) |> 
+  summarize(decisions_4th = n(),
+            total_wpaoe_4th = sum(wpaoe)) |>
+  arrange(-total_wpaoe_4th)
+
+wpaoe_board <- wpaoe_projs |>
+  mutate(wpaoe = label - exp_decision_wp) |>
+  group_by(offensive_coach, season, posteam) |> 
+  summarize(decisions_4th = n(),
+            total_wpaoe_4th = sum(wpaoe)) |>
+  arrange(-total_wpaoe_4th)
+```
+
+
+
+

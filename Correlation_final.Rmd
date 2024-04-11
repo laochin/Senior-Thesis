@@ -1,0 +1,58 @@
+---
+title: "Correlation Analysis"
+output: pdf_document
+date: "2024-04-09"
+---
+
+```{r}
+
+# Initialize a list to hold the data for all years
+all_data <- list()
+
+# Load and process the data for each year
+for (year in 2014:2022) {
+    season_data_current <- get(paste(year, "final_data", sep = "_"))
+    season_data_next <- get(paste(year + 1, "final_data", sep = "_"))
+    
+    combined_data <- full_join(season_data_current, season_data_next, by = "offensive_coach",
+                               suffix = c("_current", "_next"))
+
+    # Filter based on decisions criteria
+    combined_data <- combined_data %>%
+        filter(`decisions_4th.x_current` >= 50 & `decisions_4th.x_next` >= 50 |
+               `decisions_PAT.x_current` >= 20 & `decisions_PAT.x_next` >= 20)
+
+    # Add to the list
+    all_data[[as.character(year)]] <- combined_data
+}
+
+# Combine all years into a single data frame
+combined_all_years <- bind_rows(all_data)
+
+# Define a function to plot the correlation and print the correlation coefficient
+plot_correlation <- function(data, metric_current, metric_next, type) {
+    plot_data <- data %>% select(!!sym(metric_current), !!sym(metric_next)) %>% na.omit()
+    correlation <- cor(plot_data[[1]], plot_data[[2]])
+
+    percentage_label <- if(grepl("WPAOE", type)) "(%)" else ""
+    title <- sprintf("%s Year-to-Year Correlation = %.2f", type, correlation)
+    x_label <- sprintf("%s in Year n %s", type, percentage_label)
+    y_label <- sprintf("%s in Year n+1 %s", type, percentage_label)
+    
+    ggplot(plot_data, aes(x = !!sym(metric_current), y = !!sym(metric_next))) +
+        geom_point() +
+        geom_smooth(method = "lm", color = "blue") +
+        labs(title = title, x = x_label, y = y_label) +
+        theme_minimal() +
+        theme(plot.title = element_text(hjust = 0.5))  # Center the plot title
+}
+
+# Generate and print the plots
+plot_correlation(combined_all_years, "total_RDOE_4th_current", "total_RDOE_4th_next", "4th RDOE")
+plot_correlation(combined_all_years, "total_wpaoe_4th_current", "total_wpaoe_4th_next", "4th WPAOE")
+plot_correlation(combined_all_years, "total_PATrdoe_current", "total_PATrdoe_next", "PAT RDOE")
+plot_correlation(combined_all_years, "total_PATwpaoe_current", "total_PATwpaoe_next", "PAT WPAOE")
+
+
+
+```

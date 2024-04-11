@@ -1,0 +1,169 @@
+---
+title: "PAT_RDOE"
+output: pdf_document
+date: "2024-04-07"
+---
+
+## R Markdown
+
+
+```
+library(nfl4th)
+library(tidyverse)
+library(gt)
+library(ggrepel)
+library(nflreadr)
+library(nflplotR)
+library(xgboost)
+library(dplyr)
+library(randomForest)
+library(caret)
+options(scipen = 9999)
+library(nflfastR)
+library(ggthemes)
+library(ranger)
+library(vip)
+library(ggimage)
+library(DiagrammeR)
+```
+
+
+```{r}
+# get all 2-point conversion or extra point attempts 
+#pbp_pat1 <- nfl4th::load_4th_pbp(2014:2023, fast = TRUE) %>%
+ # filter(two_point_attempt == 1 | extra_point_attempt == 1)
+# pre-loaded
+
+# get PAT/2pt decision probabilities
+pbp_pat <- add_2pt_probs(pbp_pat1)
+
+# filter out NAs 
+pbp_pat <- pbp_pat %>%
+  filter(!is.na(wp_go1))
+
+pbp_pat <- pbp_pat %>%
+  filter(!is.na(wp_go2))
+
+# add label for (in)correct decisions
+pbp_pat <- pbp_pat %>%
+  mutate(label = case_when(
+    go == 100 & wp_go2 >= wp_go1 ~ 1,   # Correct decision to go for 2
+    go == 0 & wp_go1 >= wp_go2 ~ 1,    # Correct decision not to go for it
+    TRUE ~ 0                        # Otherwise, incorrect decision
+  ))
+
+# move go column to the end
+pbp_pat <- pbp_pat %>%
+  select(-go, go)
+
+# add coach making decision
+pbp_pat <- pbp_pat %>%
+  mutate(offensive_coach = if_else(posteam_type == "home", home_coach, away_coach))
+
+pbp_pat <- pbp_pat %>%
+  mutate(posteam_spread = if_else(posteam_type == "home", spread_line, spread_line * -1))
+
+```
+
+
+
+```{r}
+# features of interest
+pbp_pat_data_join <- pbp_pat |>
+   select(label, season, play_id, game_id, 
+         drive, home_team, away_team, posteam, 
+         offensive_coach,
+         score_differential,
+         game_seconds_remaining,wp_go1, wp_go2)
+
+#deselect features that are not for training
+pat_decisions <- pbp_pat_data_join |>
+  select(-offensive_coach, -play_id, -game_id, -drive, -home_team, -away_team, -posteam)
+
+# one hot encoding 
+pat_decisions$season <- as.factor(pat_decisions$season)
+
+dmy_pat <- dummyVars(" ~ .", data = pat_decisions)
+pat_decisions_model_data <- data.frame(predict(dmy_pat, newdata = pat_decisions))
+
+
+
+```
+
+```{r}
+#split testing and training data
+smp_size_pat <- floor(0.75 * nrow(pat_decisions_model_data))
+set.seed(2024)
+ind_pat <- sample(seq_len(nrow(pat_decisions_model_data)), size = smp_size_pat)
+train_pat <- as.matrix(pat_decisions_model_data[ind_pat, ])
+test_pat <- as.matrix(pat_decisions_model_data[-ind_pat, ])
+
+dim(train_pat)
+colnames(train_pat)
+
+positive_count_pat <- sum(train_pat[, 1] == 1)
+negative_count_pat <- sum(train_pat[, 1] == 0)
+
+```
+
+
+```{r}
+# xgboost model
+PAT_dec_model <- xgboost(
+  data = train_pat[ , 2:dim(train_pat)[2]],
+  label = train_pat[, 1],
+  nrounds = 1000,
+  objective = "reg:logistic",
+  early_stopping_rounds = 10,
+  max_depth = 3,
+  eta = 0.3, 
+  lambda = 1,
+  gamma = 0,
+  alpha = 1,
+  min_child_weight = 1,
+  max_delta_step = 0,
+  verbose = 0,
+)
+
+# look at importance of factors
+vip(PAT_dec_model)
+
+# look at accuracy
+pred_xgb <- predict(PAT_dec_model, test_pat[, 2:dim(train_pat)[2]])
+yhat <- pred_xgb
+# convert prob to binary outcomes
+yhat_binary <- ifelse(pred_xgb > 0.5, 1, 0)
+y <- test_pat[, 1]
+
+PAT_confusion <- confusionMatrix(as.factor(yhat_binary), as.factor(y))
+PAT_confusion
+```
+
+
+```{r}
+# create leaderboards and projections
+pat_decisions_preds <- as.data.frame(
+  matrix(predict(PAT_dec_model, as.matrix(pat_decisions_model_data %>% select(-label))))
+) |>
+  dplyr::rename(exp_pat_decision = V1)
+
+
+PATrdoe_projs <- cbind(pbp_pat_data_join, pat_decisions_preds)
+
+PATrdoe_projs |>
+  mutate(PATrdoe = label - exp_pat_decision) |>
+  group_by(offensive_coach, season, posteam) |> 
+  summarize(decisions_PAT = n(),
+            total_PATrdoe = sum(PATrdoe)) |>
+  arrange(-total_PATrdoe)
+
+PATrdoe_board <- PATrdoe_projs |>
+  mutate(PATrdoe = label - exp_pat_decision) |>
+  group_by(offensive_coach, season, posteam) |> 
+  summarize(decisions_PAT = n(),
+            total_PATrdoe = sum(PATrdoe)) |>
+  arrange(-total_PATrdoe)
+
+```
+
+

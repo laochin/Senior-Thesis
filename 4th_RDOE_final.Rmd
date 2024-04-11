@@ -1,0 +1,196 @@
+---
+title: "4th_RDOE"
+output: pdf_document
+date: "2024-04-06"
+---
+
+```{r}
+library(nfl4th)
+library(tidyverse)
+library(gt)
+library(ggrepel)
+library(nflreadr)
+library(nflplotR)
+library(xgboost)
+library(dplyr)
+library(randomForest)
+library(caret)
+options(scipen = 9999)
+library(nflfastR)
+library(ggthemes)
+library(ranger)
+library(vip)
+library(ggimage)
+library(DiagrammeR)
+library(ggplot2)
+library(scales) 
+library(xtable)
+```
+
+
+```{r}
+# get all 4th down play-by-play
+#pbp_4th <- nfl4th::load_4th_pbp(2014:2023, fast = TRUE) %>%
+ # filter(down == 4)
+
+pbp_4th_rd <- pbp_4th
+
+# filter out plays where go_boost is NA
+pbp_4th_rd <- pbp_4th_rd %>%
+  filter(!is.na(go_boost))
+
+# filter out plays where go is NA
+pbp_4th_rd <- pbp_4th_rd %>%
+  filter(!is.na(go))
+
+# add label for (in)correct decisions
+pbp_4th_rd <- pbp_4th_rd %>%
+  mutate(label = case_when(
+    go == 100 & go_boost > 0 ~ 1,   # Correct decision to go for it
+    go == 0 & go_boost <= 0 ~ 1,    # Correct decision not to go for it
+    TRUE ~ 0                        # Otherwise, incorrect decision
+  ))
+
+# Columns before go_boost
+cols_before <- names(pbp_4th_rd)[1:(ncol(pbp_4th_rd) - 12)]
+
+# Columns after go_boost and before 'go' and 'label'
+cols_after <- names(pbp_4th_rd)[(ncol(pbp_4th_rd) - 10):(ncol(pbp_4th_rd) - 2)]
+
+# Reorder columns so go_boost is third-to-last
+pbp_4th_check <- pbp_4th_rd %>%
+  select(
+    all_of(cols_before),
+    all_of(cols_after),
+    go_boost,
+    go,
+    label
+  )
+# df <- df %>% select(-column_name, column_name)
+# could just put go_boost last
+
+# add coach making decision
+pbp_4th_check <- pbp_4th_check %>%
+  mutate(offensive_coach = if_else(posteam_type == "home", home_coach, away_coach))
+
+pbp_4th_check <- pbp_4th_check %>%
+  mutate(posteam_spread = if_else(posteam_type == "home", spread_line, spread_line * -1))
+
+
+
+```
+
+```{r}
+# select features of interest
+pbp_data_join <- pbp_4th_check |>
+   select(label, season, play_id, game_id, 
+         drive, home_team, away_team, posteam, 
+         offensive_coach, vegas_wp, wp, down, 
+         ydstogo, yardline_100, score_differential, 
+         game_seconds_remaining, posteam_timeouts_remaining, 
+         defteam_timeouts_remaining, first_down_prob,
+         go_wp, fg_wp, punt_wp, no_score_prob,
+         opp_fg_prob, opp_td_prob, fg_prob,
+          td_prob)
+
+# deselect features not for training
+decisions <- pbp_data_join |>
+  select(-offensive_coach, -play_id, -game_id, 
+         -drive, -home_team, -away_team, -posteam)
+
+
+
+decisions$season <- as.factor(decisions$season)
+
+
+dmy <- dummyVars(" ~ .", data = decisions)
+decisions_model_data <- data.frame(predict(dmy, newdata = decisions))
+
+
+```
+
+```{r}
+
+# depth 7 , 2000 rounds, accuracy 0.8669
+# full 8703
+# full 8701 
+smp_size <- floor(0.80 * nrow(decisions_model_data))
+set.seed(2024)
+ind <- sample(seq_len(nrow(decisions_model_data)), size = smp_size)
+train <- as.matrix(decisions_model_data[ind, ])
+test <- as.matrix(decisions_model_data[-ind, ])
+
+# Assume 'train' is your training dataset and the first column is the target variable
+positive_count <- sum(train[, 1] == 1)
+negative_count <- sum(train[, 1] == 0)
+
+# Calculate scale_pos_weight
+
+
+
+dim(train)
+colnames(train)
+
+RDOE_model <- xgboost(
+  data = train[ , 2:dim(train)[2]],
+  label = train[, 1],
+  nrounds = 1400,
+  objective = "reg:logistic",
+  early_stopping_rounds = 10,
+  max_depth = 6,
+  eta = 0.15, 
+  lambda = 1,
+  gamma = 0,
+  alpha = 1,
+  min_child_weight = 1,
+  max_delta_step = 0,
+  verbose = 0,
+  scale_pos_weight = negative_count / positive_count
+)
+# see feature importance
+vip(RDOE_model)
+
+#xgb.plot.tree(model = RDOE_model, trees = 1)
+
+# look at accuracy
+pred_xgb <- predict(RDOE_model, test[, 2:dim(train)[2]])
+yhat <- pred_xgb
+# convert prob to binary outcomes
+yhat_binary <- ifelse(pred_xgb > 0.5, 1, 0)
+y <- test[, 1]
+
+RDOE_confusion <- confusionMatrix(as.factor(yhat_binary), as.factor(y))
+RDOE_confusion
+```
+
+
+```{r}
+
+
+```
+
+```{r}
+#make predictions
+decisions_preds <- as.data.frame(
+  matrix(predict(RDOE_model, as.matrix(decisions_model_data %>% select(-label))))
+) |>
+  dplyr::rename(exp_decision = V1)
+
+RDOE_projs <- cbind(pbp_data_join, decisions_preds)
+
+#leaderboards
+RDOE_projs |>
+  mutate(RDOE = label - exp_decision) |>
+  group_by(offensive_coach, season, posteam) |> 
+  summarize(decisions_4th = n(),
+            total_RDOE_4th = sum(RDOE)) |>
+  arrange(-total_RDOE_4th)
+
+RDOE_board <- RDOE_projs |>
+  mutate(RDOE = label - exp_decision) |>
+  group_by(offensive_coach, season, posteam) |> 
+  summarize(decisions_4th = n(),
+            total_RDOE_4th = sum(RDOE)) |>
+  arrange(-total_RDOE_4th)
+```
+

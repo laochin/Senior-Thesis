@@ -1,0 +1,169 @@
+---
+title: "PAT_WPAOE"
+output: pdf_document
+date: "2024-04-07"
+---
+
+```
+library(nfl4th)
+library(tidyverse)
+library(gt)
+library(ggrepel)
+library(nflreadr)
+library(nflplotR)
+library(xgboost)
+library(dplyr)
+library(randomForest)
+library(caret)
+options(scipen = 9999)
+library(nflfastR)
+library(ggthemes)
+library(ranger)
+library(vip)
+library(ggimage)
+library(DiagrammeR)
+```
+
+
+```{r}
+
+# get PAT/2pt decision probabilities
+pbp_pat <- add_2pt_probs(pbp_pat1)
+
+# filter out NAs 
+pbp_pat <- pbp_pat %>%
+  filter(!is.na(wp_go1))
+
+pbp_pat <- pbp_pat %>%
+  filter(!is.na(wp_go2))
+
+
+# add label for  PAT decision wp gain/loss
+pbp_pat_wp <- pbp_pat %>%
+  mutate(label = case_when(
+    go == 100 ~ (wp_go2 - wp_go1)*100 ,   # if you go for 2
+    go == 0 ~ (wp_go1 - wp_go2)*100    # if you don't go for 2
+  ))
+
+# move go column to the end
+pbp_pat_wp <- pbp_pat_wp %>%
+  select(-go, go)
+
+# add coach making decision
+pbp_pat_wp <- pbp_pat_wp %>%
+  mutate(offensive_coach = if_else(posteam_type == "home", home_coach, away_coach))
+
+
+```
+
+```{r}
+#interesting features
+pbp_pat_wp_data_join <- pbp_pat_wp |>
+   select(label, season, play_id, game_id, 
+         drive, home_team, away_team, posteam, 
+         offensive_coach,
+         score_differential,
+         game_seconds_remaining,wp_go1, wp_go2, vegas_wp, wp, qtr)
+
+#deselect features that are not for training
+pat_wp_decisions <- pbp_pat_wp_data_join |>
+  select( -offensive_coach, -play_id, -game_id, -drive, -home_team, -away_team, -posteam)
+
+# one hot encoding
+pat_wp_decisions$season<-as.factor(pat_wp_decisions$season)
+pat_wp_decisions$qtr <- as.factor(pat_wp_decisions$qtr)
+
+dmy_wp_pat <- dummyVars(" ~ .", data = pat_wp_decisions)
+pat_wp_decisions_model_data <- data.frame(predict(dmy_wp_pat, newdata = pat_wp_decisions))
+
+# split testing and training data
+smp_size_wp_pat <- floor(0.75 * nrow(pat_wp_decisions_model_data))
+set.seed(2024)
+ind_wp_pat <- sample(seq_len(nrow(pat_wp_decisions_model_data)), size = smp_size_wp_pat)
+train_wp_pat <- as.matrix(pat_wp_decisions_model_data[ind_wp_pat, ])
+test_wp_pat <- as.matrix(pat_wp_decisions_model_data[-ind_wp_pat, ])
+
+
+
+dim(train_wp_pat)
+colnames(train_wp_pat)
+```
+
+
+
+```{r}
+# xgboost model
+
+PAT_wpaoe_model <- xgboost(
+  data = train_wp_pat[ , 2:dim(train_wp_pat)[2]],
+  label = train_wp_pat[, 1],
+  nrounds = 1000,
+  objective = "reg:squarederror",
+  early_stopping_rounds = 10,
+  max_depth = 9,
+  eta = 0.15,
+  verbose = 0
+)
+
+# look at importance of factors
+vip(PAT_wpaoe_model)
+
+# look at rmse and r squared
+pred_xgb <- predict(PAT_wpaoe_model, test_wp_pat[, 2:dim(train_wp_pat)[2]])
+yhat <- pred_xgb
+y <- test_wp_pat[, 1]
+PAT_wpaoe_accuracy <- postResample(yhat, y)
+PAT_wpaoe_accuracy
+
+
+
+```
+
+```{r}
+# Assuming your dependent variable is the first column in your dataset
+dependent_variable <- train_wp_pat[, 1]  # Adjust the index according to your data
+
+# Calculate and display the statistics
+min_value <- min(dependent_variable)
+max_value <- max(dependent_variable)
+mean_value <- mean(dependent_variable)
+median_value <- median(dependent_variable)
+std_deviation <- sd(dependent_variable)
+
+# Print the statistics
+print(paste("Min:", min_value))
+print(paste("Max:", max_value))
+print(paste("Mean:", mean_value))
+print(paste("Median:", median_value))
+print(paste("Standard Deviation:", std_deviation))
+
+```
+
+
+```{r}
+# create leaderboards and projections
+pat_wp_decisions_preds <- as.data.frame(
+  matrix(predict(PAT_wpaoe_model, as.matrix(pat_wp_decisions_model_data %>% select(-label))))
+) |>
+  dplyr::rename(exp_pat_decision_wp = V1)
+
+
+PATwpaoe_projs <- cbind(pbp_pat_wp_data_join, pat_wp_decisions_preds)
+
+PATwpaoe_projs |>
+  mutate(PATwpaoe = label - exp_pat_decision_wp) |>
+  group_by(offensive_coach, season, posteam) |> 
+  summarize(decisions_PAT = n(),
+            total_PATwpaoe = sum(PATwpaoe)) |>
+  arrange(-total_PATwpaoe)
+
+PATwpaoe_board <- PATwpaoe_projs |>
+  mutate(PATwpaoe = label - exp_pat_decision_wp) |>
+  group_by(offensive_coach, season, posteam) |> 
+  summarize(decisions_PAT = n(),
+            total_PATwpaoe = sum(PATwpaoe)) |>
+  arrange(-total_PATwpaoe)
+
+```
+
+

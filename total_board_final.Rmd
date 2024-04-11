@@ -1,0 +1,26 @@
+---
+title: "findings"
+output: html_document
+date: "2024-04-10"
+---
+
+```{r}
+
+# Assuming final_data is already loaded and contains the necessary columns
+
+# Aggregate the data by offensive_coach, sum the WPAOE_all, count the number of unique seasons,
+# and calculate the average WPAOE per season
+total_wpaoe_by_coach <- final_data %>%
+  group_by(offensive_coach) %>%
+  summarise(
+    Total_WPAOE = sum(WPAOE_all, na.rm = TRUE),
+    Seasons = n_distinct(season),
+    Average_WPAOE_Per_Season = Total_WPAOE / n_distinct(season)
+  ) %>%
+  arrange(desc(Total_WPAOE))  # Sort the data frame by Total_WPAOE in descending order
+
+# Display the resulting data frame
+print(total_wpaoe_by_coach)
+
+```
+
